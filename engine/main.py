@@ -1,17 +1,12 @@
 import asyncio
 import logging
 
-from rich.logging import RichHandler
-
 from config import WATCHLIST
 
 from .ib_client import build_contracts, connect, on_pending, qualify_contracts
+from .logging_config import setup_logging
 
-logging.basicConfig(
-    level="INFO", format="%(message)s", datefmt="[%X]", handlers=[RichHandler()]
-)
-
-logging.getLogger("ib_async.wrapper").setLevel(logging.WARNING)
+setup_logging()
 log = logging.getLogger(__name__)
 
 

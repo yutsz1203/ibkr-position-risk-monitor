@@ -20,7 +20,7 @@ def on_error(
     symbol = contract.symbol if contract else "-"
     msg = f"symbol: {symbol}, errorCode: {errorCode}, errorString: {errorString}, reqId: {reqId}"
     if errorCode in DATA_FARM_STATUS_CODES:
-        log.info(msg)
+        log.debug(msg)
     elif errorCode in CONNECTIVITY_CODES:
         log.warning(msg)
     else:
@@ -31,18 +31,14 @@ def on_connect() -> None:
     """
     Connection event handler.
     """
-    log.info(
-        f"Connection established. Port: {IB_PORT}, Host: {IB_HOST}, Client_ID: {IB_CLIENT_ID}."
-    )
+    log.info("Connection established.")
 
 
 def on_disconnect() -> None:
     """
     Disconnection event handler.
     """
-    log.info(
-        f"Disconnected from Port: {IB_PORT}, Host: {IB_HOST}, Client_ID: {IB_CLIENT_ID}."
-    )
+    log.info("Disconnected.")
 
 
 def on_pending(tickers: set[Ticker]) -> None:
@@ -56,12 +52,12 @@ def on_pending(tickers: set[Ticker]) -> None:
             )
 
 
-async def connect():
+async def connect(client_id: int = IB_CLIENT_ID) -> IB:
     ib = IB()
     ib.connectedEvent += on_connect
     ib.disconnectedEvent += on_disconnect
     ib.errorEvent += on_error
-    await ib.connectAsync(IB_HOST, IB_PORT, IB_CLIENT_ID)
+    await ib.connectAsync(IB_HOST, IB_PORT, client_id)
     return ib
 
 

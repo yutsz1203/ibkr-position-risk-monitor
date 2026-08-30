@@ -106,7 +106,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ibkr-position-risk-monitor"
+name = "ib-paper-trading-engine"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

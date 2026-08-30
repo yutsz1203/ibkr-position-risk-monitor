@@ -1,5 +1,5 @@
 [project]
-name = "ibkr-position-risk-monitor"
+name = "ib-paper-trading-engine"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"

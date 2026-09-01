@@ -8,13 +8,7 @@ from ib_async import Trade
 from config import IB_SCRIPT_CLIENT_ID
 from engine.ib_client import build_contracts, connect, qualify_contracts
 from engine.logging_config import setup_logging
-from engine.orders import (
-    cancel_order,
-    on_commission_report,
-    on_exec_details,
-    on_order_status,
-    place_order,
-)
+from engine.orders import cancel_order, place_order
 
 setup_logging()
 log = logging.getLogger(__name__)
@@ -86,9 +80,6 @@ async def main(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        ib.orderStatusEvent += on_order_status
-        ib.execDetailsEvent += on_exec_details
-        ib.commissionReportEvent += on_commission_report
 
         if args.order_id is not None:
             trade = cancel_order(ib, args.order_id)

@@ -1,7 +1,8 @@
 import logging
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import replace
 
+import redis
 from ib_async import (
     IB,
     CommissionReport,
@@ -15,21 +16,56 @@ from ib_async import (
 
 from config import WATCHLIST
 
+from .models import Holding
+from .state import (
+    apply_commissions,
+    read_ib_commissions,
+    read_ib_positions,
+    redis_client,
+    write_commission,
+    write_fill,
+    write_order_status,
+)
+
 log = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class Holding:
-    symbol: str
-    qty: float
-    avg_cost: float  # positive even when short
-    commission: float = 0.0
 
 
 positions: dict[str, Holding] = {}  # key: symbol
 seen_exec: dict[str, Fill] = {}  # key: exec_id
 commissioned: dict[str, float] = {}  # key: exec_id
 trades: dict[int, Trade] = {}  # key: orderID
+
+
+def seed_from_ib(ib: IB) -> None:
+    """Fill the in-memory dicts from IB, so the first fill starts from the right base.
+
+    `resync_from_ib` writes Redis and leaves these dicts alone. Without this,
+    `positions` is empty at every start, and the first fill on a held symbol
+    overwrites the whole position with the size of that one fill.
+
+    This reads IB, not Redis, so the dicts hold IB's truth even when the resync
+    failed. Call it after the resync and before the handlers are attached.
+
+    Only a commission report that has arrived is recorded. A fill whose report
+    is still in flight stays absent, so the live handler applies it later
+    instead of rejecting it as a correction.
+
+    Args:
+        ib: A connected IB instance.
+    """
+    positions.clear()
+    positions.update(apply_commissions(read_ib_positions(ib), read_ib_commissions(ib)))
+
+    commissioned.clear()
+    for fill in ib.fills():
+        report = fill.commissionReport
+        if report.execId:
+            commissioned[report.execId] = report.commission
+
+    log.info(
+        f"Seeded {len(positions)} positions and {len(commissioned)} commission "
+        f"reports from IB."
+    )
 
 
 def validate_order_request(
@@ -180,12 +216,23 @@ def cancel_order(ib: IB, order_id: int) -> Trade | None:
 def on_order_status(trade: Trade) -> None:
     """Event handler for statusEvent
 
+    This is the only handler that maintains the open order in Redis. An order
+    that is cancelled never fills, so `on_exec_details` never sees it.
+
     Args:
         trade: A Trade Instance.
     """
     log.info(
         f"[{trade.order.orderRef}][{trade.order.orderId}] Order status update: permId: {trade.order.permId}, symbol: {trade.contract.symbol}, status: {trade.orderStatus.status}, filled: {trade.orderStatus.filled}, remaining: {trade.orderStatus.remaining}, avgFillPrice: {trade.orderStatus.avgFillPrice}."
     )
+
+    try:
+        write_order_status(redis_client, trade)
+    except redis.RedisError as err:
+        log.error(
+            f"[{trade.order.orderRef}][{trade.order.orderId}] Redis order write failed "
+            f"| permId={trade.order.permId} | {err}"
+        )
 
 
 def on_exec_details(trade: Trade, fill: Fill) -> None:
@@ -224,6 +271,15 @@ def on_exec_details(trade: Trade, fill: Fill) -> None:
     symbol = fill.contract.symbol
     before = positions.get(symbol)
     after = apply_fill(before, fill)
+
+    try:
+        write_fill(redis_client, after, trade)
+    except redis.RedisError as err:
+        log.error(
+            f"[{e.orderRef}][{e.orderId}] Redis fill write failed "
+            f"| exec_id={exec_id} symbol={symbol} | {err}"
+        )
+
     positions[symbol] = after
     seen_exec[exec_id] = fill
 
@@ -286,19 +342,33 @@ def on_commission_report(trade: Trade, fill: Fill, report: CommissionReport) -> 
     # not seen and holding exists
     holding = positions[symbol]
     old_commission = holding.commission
-    new_commission = old_commission + commission
-    positions[symbol] = replace(holding, commission=new_commission)
+    updated = apply_commission(holding, commission, fill.execution.side)
+
+    try:
+        write_commission(redis_client, updated)
+    except redis.RedisError as err:
+        log.error(
+            f"[{order_ref}][{order_id}] Redis commission write failed "
+            f"| exec_id={exec_id} symbol={symbol} | {err}"
+        )
+
+    positions[symbol] = updated
     commissioned[exec_id] = commission
     log.info(
         f"[{order_ref}][{order_id}] COMMISSION {fill.contract.symbol} "
-        f"| exec_id={exec_id} | old_commission={old_commission} | new_commission={new_commission} | currency={currency} | realized_pnl={realized_pnl}"
+        f"| exec_id={exec_id} | old_commission={old_commission} | new_commission={updated.commission} "
+        f"| avg_cost {holding.avg_cost} -> {updated.avg_cost} | currency={currency} | realized_pnl={realized_pnl}"
     )
 
 
 def apply_fill(holding: Holding | None, fill: Fill) -> Holding:
     """Apply fill orders on holding, updating its quantity and average cost.
 
-    avg_cost is the average price paid for the shares currently holding. Buying more changes, selling doesn't.
+    avg_cost is the cost basis per share, commission included. This function
+    does the price part alone, because the commission report arrives after the
+    fill. `apply_commission` adds the commission when that report lands.
+
+    Buying more changes avg_cost. Selling does not.
 
     Args:
         holding: A Holding instance. Can be none (no position yet).
@@ -334,3 +404,29 @@ def apply_fill(holding: Holding | None, fill: Fill) -> Holding:
         new_avg = price
 
     return replace(holding, qty=new_qty, avg_cost=new_avg)
+
+
+def apply_commission(holding: Holding, commission: float, side: str) -> Holding:
+    """Fold one commission into a position, the way IB does.
+
+    Args:
+        holding: The position after the fill, before this commission.
+        commission: The commission from the report. IB reports it as positive.
+        side: `BOT` or `SLD`, from the execution of the fill.
+
+    Returns:
+        A new Holding. The commission is always added. The cost basis moves
+        only when the trade increased the position.
+    """
+    new_commission = holding.commission + commission
+    increases = (side == "BOT" and holding.qty > 0) or (
+        side == "SLD" and holding.qty < 0
+    )
+    if not increases:
+        return replace(holding, commission=new_commission)
+
+    return replace(
+        holding,
+        avg_cost=holding.avg_cost + commission / abs(holding.qty),
+        commission=new_commission,
+    )

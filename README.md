@@ -1,6 +1,17 @@
 # IB Paper Trading Engine
 
-## Using the Engine
+## Quick Start
+This project uses [uv](https://docs.astral.sh/uv/) as the package manager.
+```bash
+uv sync
+```
+
+Set up `.env` file
+```bash
+cp .env.example .env
+```
+
+## Usage
 1. Start IB Gateway.
 2. Start the engine.
 ```bash

@@ -15,4 +15,6 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 DB_PATH = os.getenv("DB_PATH", "data/risk_monitor.db")
 
-WATCHLIST = ["SPYM", "RDDT", "GOOGL", "UNH"]
+WATCHLIST = ["SPYM", "RDDT", "GOOGL", "JPM"]
+
+BASE_CURRENCY = "USD"

@@ -1,0 +1,1 @@
+Snapshot(positions={'GOOGL': Holding(symbol='GOOGL', qty=10.0, avg_cost=367.73, commission=0.0), 'RDDT': Holding(symbol='RDDT', qty=30.0, avg_cost=149.2967, commission=0.0)}, open_orders={}, cash='993135.00', last_sync='2026-08-31T11:18:19.609710+00:00')
